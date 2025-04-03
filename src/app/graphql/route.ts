@@ -1,174 +1,11 @@
 import { ApolloServer } from '@apollo/server';
 import { startServerAndCreateNextHandler } from '@as-integrations/next';
 import { gql } from 'graphql-tag';
-import { RESTDataSource } from '@apollo/datasource-rest';
 import { chromium } from 'playwright';
 import { createObjectCsvWriter } from 'csv-writer';
-import fs from 'fs';
-
-class BallDontLieAPI extends RESTDataSource {
-  override baseURL = 'https://api.balldontlie.io/v1/';
-
-  async getTeams(): Promise<Team[]> {
-    const response = await this.get('teams', {
-      headers: {
-        Authorization: `${process.env.NEXT_PUBLIC_BALLDONTLIE_API_KEY}`,
-      },
-    });
-    return response.data;
-  }
-
-  async getPlayers(): Promise<Player[]> {
-    let allPlayers: Player[] = [];
-    let cursor: string | undefined = undefined;
-    const per_page = '100'; // Set your desired page size
-
-    do {
-      const response: ApiResponse = await this.get('players', {
-        headers: {
-          Authorization: `${process.env.NEXT_PUBLIC_BALLDONTLIE_API_KEY}`,
-        },
-        params: {
-          cursor,
-          per_page,
-          'team_ids[]': ['28'],
-        },
-      });
-
-      allPlayers = allPlayers.concat(response.data);
-      cursor = response.meta.next_cursor;
-    } while (cursor !== undefined);
-
-    return allPlayers;
-  }
-
-  async getSeasonAverages(player_ids: string[]): Promise<SeasonAverages[]> {
-    const formattedPlayerIds = player_ids
-      .map((id) => `player_ids[]=${id}`)
-      .join('&');
-    const response = await this.get(`season_averages?${formattedPlayerIds}`, {
-      headers: {
-        Authorization: `${process.env.NEXT_PUBLIC_BALLDONTLIE_API_KEY}`,
-      },
-      params: {
-        season: '2023',
-      },
-    });
-    return response.data;
-  }
-}
-
-interface ApiResponse {
-  data: Player[];
-  meta: {
-    next_cursor?: number;
-    per_page: number;
-  };
-}
-
-interface Team {
-  id: number;
-  conference: string;
-  division: string;
-  city: string;
-  name: string;
-  full_name: string;
-  abbreviation: string;
-}
-
-interface Player {
-  id: number;
-  first_name: string;
-  last_name: string;
-  position: string;
-  height: string;
-  weight: string;
-  jersey_number: string;
-  college: string;
-  country: string;
-  draft_year: number;
-  draft_round: number;
-  draft_number: number;
-  team: Team;
-}
-
-interface SeasonAverages {
-  pts: number;
-  ast: number;
-  turnover: number;
-  pf: number;
-  fga: number;
-  fgm: number;
-  fta: number;
-  ftm: number;
-  fg3a: number;
-  fg3m: number;
-  reb: number;
-  oreb: number;
-  dreb: number;
-  stl: number;
-  blk: number;
-  fg_pct: number;
-  fg3_pct: number;
-  ft_pct: number;
-  min: string;
-  games_played: number;
-  player_id: number;
-  season: number;
-}
+import { NextRequest, NextResponse } from 'next/server';
 
 const typeDefs = gql`
-  type Team {
-    id: Int
-    conference: String
-    division: String
-    city: String
-    name: String
-    full_name: String
-    abbreviation: String
-  }
-
-  type Player {
-    id: Int
-    first_name: String
-    last_name: String
-    position: String
-    height: String
-    weight: String
-    jersey_number: String
-    college: String
-    country: String
-    draft_year: Int
-    draft_round: Int
-    draft_number: Int
-    team: Team
-  }
-
-  type SeasonAverage {
-    pts: Float
-    ast: Float
-    turnover: Float
-    pf: Float
-    fga: Float
-    fgm: Float
-    fta: Float
-    ftm: Float
-    fg3a: Float
-    fg3m: Float
-    reb: Float
-    oreb: Float
-    dreb: Float
-    stl: Float
-    blk: Float
-    fg_pct: Float
-    fg3_pct: Float
-    ft_pct: Float
-    min: String
-    games_played: Int
-    player_id: Int
-    season: Int
-  }
-
   type PlayerStats {
     name: String
     team: String
@@ -202,28 +39,12 @@ const typeDefs = gql`
   }
 
   type Query {
-    teams: [Team]
-    players: [Player]
-    seasonAverages: [SeasonAverage]
     playerStats: [PlayerStats]
   }
 `;
 
 const resolvers = {
   Query: {
-    teams: async (_, __, { dataSources }) => {
-      return dataSources.ballDontLieAPI.getTeams();
-    },
-    players: async (_, __, { dataSources }) => {
-      return dataSources.ballDontLieAPI.getPlayers();
-    },
-    seasonAverages: async (_, __, { dataSources }) => {
-      return dataSources.ballDontLieAPI.getSeasonAverages([
-        '17896055',
-        '3547269',
-        '203507',
-      ]);
-    },
     playerStats: async () => {
       try {
         const browser = await chromium.launch({ headless: true });
@@ -317,7 +138,7 @@ const resolvers = {
 
         await browser.close();
         return allPlayerStats;
-      } catch (error) {
+      } catch (error: any) {
         console.error('Error during scraping:', error.message);
         console.error(error.stack);
         throw new Error('An error occurred during scraping.');
@@ -326,24 +147,19 @@ const resolvers = {
   },
 };
 
-interface ContextValue {
-  dataSources: {
-    ballDontLieAPI: BallDontLieAPI;
-  };
+const server = new ApolloServer({
+  typeDefs,
+  resolvers,
+});
+
+const handler = startServerAndCreateNextHandler(server);
+
+export async function POST(request: NextRequest) {
+  const response = await handler(request);
+  return response;
 }
 
-const server = new ApolloServer<ContextValue>({
-  resolvers,
-  typeDefs,
-});
-
-export default startServerAndCreateNextHandler(server, {
-  context: async () => {
-    const { cache } = server;
-    return {
-      dataSources: {
-        ballDontLieAPI: new BallDontLieAPI({ cache }),
-      },
-    };
-  },
-});
+export async function GET(request: NextRequest) {
+  const response = await handler(request);
+  return response;
+}
